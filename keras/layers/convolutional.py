@@ -237,6 +237,100 @@ class Convolution2D(Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
+class Convolution3D(Layer):
+    input_ndim = 5
+
+    def __init__(self, nb_filter, nb_depth, nb_row, nb_col,
+                 init='glorot_uniform', activation='linear', weights=None,
+                 border_mode='valid', subsample=(1, 1, 1),
+                 W_regularizer=None, b_regularizer=None, activity_regularizer=None,
+                 W_constraint=None, b_constraint=None, **kwargs):
+
+        if border_mode not in {'valid', 'full', 'same'}:
+            raise Exception('Invalid border mode for Convolution3D:', border_mode)
+        self.nb_filter = nb_filter
+        self.nb_depth = nb_depth
+        self.nb_row = nb_row
+        self.nb_col = nb_col
+        self.init = initializations.get(init)
+        self.activation = activations.get(activation)
+        self.border_mode = border_mode
+        self.subsample = tuple(subsample)
+
+        self.W_regularizer = regularizers.get(W_regularizer)
+        self.b_regularizer = regularizers.get(b_regularizer)
+        self.activity_regularizer = regularizers.get(activity_regularizer)
+
+        self.W_constraint = constraints.get(W_constraint)
+        self.b_constraint = constraints.get(b_constraint)
+        self.constraints = [self.W_constraint, self.b_constraint]
+
+        self.initial_weights = weights
+        self.input = K.placeholder(ndim=5)
+        super(Convolution3D, self).__init__(**kwargs)
+
+    def build(self):
+        stack_size = self.input_shape[1]
+        self.W_shape = (self.nb_filter, stack_size, self.nb_depth, self.nb_row, self.nb_col)
+        self.W = self.init(self.W_shape)
+        self.b = K.zeros((self.nb_filter,))
+        self.params = [self.W, self.b]
+        self.regularizers = []
+
+        if self.W_regularizer:
+            self.W_regularizer.set_param(self.W)
+            self.regularizers.append(self.W_regularizer)
+
+        if self.b_regularizer:
+            self.b_regularizer.set_param(self.b)
+            self.regularizers.append(self.b_regularizer)
+
+        if self.activity_regularizer:
+            self.activity_regularizer.set_layer(self)
+            self.regularizers.append(self.activity_regularizer)
+
+        if self.initial_weights is not None:
+            self.set_weights(self.initial_weights)
+            del self.initial_weights
+
+    @property
+    def output_shape(self):
+        input_shape = self.input_shape
+        depth = input_shape[2]
+        rows = input_shape[3]
+        cols = input_shape[4]
+        depth = conv_output_length(depth, self.nb_depth, self.border_mode, self.subsample[0])
+        rows = conv_output_length(rows, self.nb_row, self.border_mode, self.subsample[1])
+        cols = conv_output_length(cols, self.nb_col, self.border_mode, self.subsample[2])
+        return (input_shape[0], self.nb_filter, depth, rows, cols)
+
+    def get_output(self, train):
+        X = self.get_input(train)
+        conv_out = K.conv3d(X, self.W, strides=self.subsample,
+                            border_mode=self.border_mode)
+
+        output = conv_out + K.reshape(self.b, (1, self.nb_filter, 1, 1, 1))
+        output = self.activation(output)
+        return output
+
+    def get_config(self):
+        return {"name": self.__class__.__name__,
+                "nb_filter": self.nb_filter,
+                "stack_size": self.stack_size,
+                "nb_depth": self.nb_depth,
+                "nb_row": self.nb_row,
+                "nb_col": self.nb_col,
+                "init": self.init.__name__,
+                "activation": self.activation.__name__,
+                "border_mode": self.border_mode,
+                "subsample": self.subsample,
+                "W_regularizer": self.W_regularizer.get_config() if self.W_regularizer else None,
+                "b_regularizer": self.b_regularizer.get_config() if self.b_regularizer else None,
+                "activity_regularizer": self.activity_regularizer.get_config() if self.activity_regularizer else None,
+                "W_constraint": self.W_constraint.get_config() if self.W_constraint else None,
+                "b_constraint": self.b_constraint.get_config() if self.b_constraint else None}
+
+
 class MaxPooling1D(Layer):
     input_ndim = 3
 
@@ -334,6 +428,58 @@ class MaxPooling2D(Layer):
                   "strides": self.strides,
                   "dim_ordering": self.dim_ordering}
         base_config = super(MaxPooling2D, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class MaxPooling3D(Layer):
+    input_ndim = 5
+
+    def __init__(self, pool_size=(2, 2, 2), strides=None, border_mode='valid', **kwargs):
+        super(MaxPooling3D, self).__init__(**kwargs)
+        self.mode = 'max'
+        self.pool_size = tuple(pool_size)
+        if strides is None:
+            strides = self.pool_size
+        self.strides = tuple(strides)
+        self.border_mode = border_mode
+
+        self.input = K.placeholder(ndim=5)
+        self.params = []
+
+    @property
+    def output_shape(self):
+        input_shape = self.input_shape
+        depth = conv_output_length(input_shape[2], self.pool_size[0],
+                                   self.border_mode, self.strides[0])
+        rows = conv_output_length(input_shape[3], self.pool_size[1],
+                                  self.border_mode, self.strides[1])
+        cols = conv_output_length(input_shape[4], self.pool_size[2],
+                                  self.border_mode, self.strides[2])
+        return (input_shape[0], input_shape[1], depth, rows, cols)
+
+    def get_output(self, train):
+        X = self.get_input(train)
+
+        # pooling over X, Z (last two channels)
+        output = K.maxpool2d(X.dimshuffle(0, 1, 4, 3, 2),
+                             pool_size=(self.pool_size[1], self.pool_size[0]),
+                             strides=(self.strides[1], self.strides[0]),
+                             border_mode=self.border_mode, dim_ordering='th')
+
+        # max_pool_2d X and Y, X constant
+        output = K.maxpool2d(output.dimshuffle(0, 1, 4, 3, 2),
+                             pool_size=(1, self.pool_size[2]),
+                             strides=(1, self.strides[2]),
+                             border_mode=self.border_mode, dim_ordering='th')
+
+        return output
+
+    def get_config(self):
+        return {"name": self.__class__.__name__,
+                "pool_size": self.pool_size,
+                "border_mode": self.border_mode,
+                "strides": self.strides}
+        base_config = super(MaxPooling3D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 

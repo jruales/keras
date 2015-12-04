@@ -1,6 +1,7 @@
 import theano
 from theano import tensor as T
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from theano.tensor.nnet import conv3d2d
 from theano.tensor.signal import downsample
 import numpy as np
 from .common import _FLOATX, _EPSILON
@@ -51,6 +52,9 @@ def placeholder(shape=None, ndim=None, dtype=_FLOATX, name=None):
         return T.tensor3(name=name, dtype=dtype)
     elif ndim == 4:
         return T.tensor4(name=name, dtype=dtype)
+    else:
+        ndim_tensor = T.TensorType(dtype, (0,)*ndim)
+        return ndim_tensor()
     else:
         raise Exception('ndim too large: ' + str(ndim))
 
@@ -631,6 +635,55 @@ def conv2d(x, kernel, strides=(1, 1), border_mode='valid', dim_ordering='th',
                                 shift_y:x.shape[3] + shift_y]
     if dim_ordering == 'tf':
         conv_out = conv_out.dimshuffle((0, 2, 3, 1))
+    return conv_out
+
+
+def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid'):
+    '''
+    Run on cuDNN if available.
+    border_mode: string, "same" or "valid".
+    '''
+    # Both conv3d2d.conv3d and nnet.conv3D only support the 'valid' border mode
+    if border_mode != 'valid':
+        if border_mode == 'same':
+            assert(strides == (1, 1, 1))
+            pad_z = (kernel.shape[2] - strides[0])
+            pad_x = (kernel.shape[3] - strides[1])
+            pad_y = (kernel.shape[4] - strides[2])
+        else: #full
+            pad_z = (kernel.shape[2] - 1) * 2
+            pad_x = (kernel.shape[3] - 1) * 2
+            pad_y = (kernel.shape[4] - 1) * 2
+
+        input_shape = x.shape
+        output_shape = (input_shape[0], input_shape[1],
+                        input_shape[2] + pad_z,
+                        input_shape[3] + pad_x,
+                        input_shape[4] + pad_y)
+        output = T.zeros(output_shape)
+        indices = (slice(None), slice(None),
+                   slice(pad_z//2, input_shape[2] + pad_z//2),
+                   slice(pad_x//2, input_shape[3] + pad_x//2),
+                   slice(pad_y//2, input_shape[4] + pad_y//2))
+        x = T.set_subtensor(output[indices], x)
+
+    border_mode = 'valid'
+
+    if _on_gpu():
+        assert(strides == (1, 1, 1))
+        # Shuffle the dimensions as per the input parameter order, restore it once done
+        conv_out = conv3d2d.conv3d(signals=x.dimshuffle(0, 2, 1, 3, 4),
+                                   filters=kernel.dimshuffle(0, 2, 1, 3, 4),
+                                   border_mode=border_mode)
+
+        conv_out = conv_out.dimshuffle(0, 2, 1, 3, 4)
+    else:
+        # Shuffle the dimensions as per the input parameter order, restore it once done
+        conv_out = T.nnet.conv3D(V=x.dimshuffle(0, 2, 3, 4, 1),
+                                 W=kernel.dimshuffle(0, 2, 3, 4, 1),
+                                 b=None, d=strides)
+        conv_out = conv_out.dimshuffle(0, 4, 1, 2, 3)
+
     return conv_out
 
 

@@ -55,8 +55,6 @@ def placeholder(shape=None, ndim=None, dtype=_FLOATX, name=None):
     else:
         ndim_tensor = T.TensorType(dtype, (0,)*ndim)
         return ndim_tensor()
-    else:
-        raise Exception('ndim too large: ' + str(ndim))
 
 
 def shape(x):

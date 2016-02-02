@@ -767,7 +767,7 @@ class MaxPooling3D(_Pooling3D):
 
 
 class AveragePooling3D(_Pooling3D):
-    def __init__(self, pool_size=(2, 2), strides=None, border_mode='valid',
+    def __init__(self, pool_size=(2, 2, 2), strides=None, border_mode='valid',
                  dim_ordering='th', **kwargs):
         super(AveragePooling3D, self).__init__(pool_size, strides, border_mode,
                                                dim_ordering, **kwargs)
